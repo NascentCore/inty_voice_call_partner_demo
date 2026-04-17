@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Inty VoiceCall Demo</string>
+    <string name="demo_hint">本工程依赖同级目录 inty_voice_call 原始模块。在 MainActivity 中填入 wss / agentId / token 后可扩展为真实联调。</string>
+</resources>

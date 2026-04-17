@@ -1,0 +1,44 @@
+/**
+ * 将本文件复制为 inty_voice_call 模块的 build.gradle.kts，
+ * 用于客户工程无 IntelliMate ai.android.library 约定插件时的离线接入。
+ * 请把 AGP / Kotlin / compileSdk / minSdk 与客户主工程对齐。
+ */
+plugins {
+    id("com.android.library") version "8.13.0"
+    id("org.jetbrains.kotlin.android") version "2.2.21"
+    kotlin("plugin.serialization") version "2.2.21"
+}
+
+android {
+    namespace = "ai.sxwl.android.inty.voicecall"
+    compileSdk = 36
+
+    defaultConfig {
+        minSdk = 29
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    compilerOptions { freeCompilerArgs.add("-Xannotation-default-target=param-property") }
+}
+
+kotlin {
+    jvmToolchain(17)
+}
+
+dependencies {
+    implementation("androidx.annotation:annotation:1.9.1")
+    implementation(platform("io.ktor:ktor-bom:3.3.2"))
+    implementation("io.ktor:ktor-client-core")
+    implementation("io.ktor:ktor-client-okhttp")
+    implementation("io.ktor:ktor-client-websockets")
+    implementation("io.ktor:ktor-client-content-negotiation")
+    implementation("io.ktor:ktor-serialization-kotlinx-json")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+}
