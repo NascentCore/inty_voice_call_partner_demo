@@ -22,7 +22,8 @@ private val intyLiveChatJson =
 
 data class IntyVoiceCallDemoSession(
     val repository: LiveChatVoiceDemoRepository,
-    private val httpClient: HttpClient,
+    /** 与 WebSocket 共用，可用于 `GET .../live-chat/status` 等 HTTP 调用 */
+    val httpClient: HttpClient,
     private val voiceCallClient: IntyVoiceCallClient,
 ) {
     suspend fun dispose() {

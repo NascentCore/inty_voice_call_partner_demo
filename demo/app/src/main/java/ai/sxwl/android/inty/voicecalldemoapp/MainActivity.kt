@@ -6,6 +6,7 @@ import ai.sxwl.android.inty.voicecall.VoiceCallConnectionState
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
@@ -32,6 +33,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import partner.inty.voicecalldemo.IntyVoiceCallDemoSession
 import partner.inty.voicecalldemo.createIntyVoiceCallDemoSession
+import partner.inty.voicecalldemo.fetchLiveChatStatus
 import kotlin.math.sqrt
 
 /**
@@ -49,8 +51,17 @@ class MainActivity : AppCompatActivity() {
     private var pcmSendJob: Job? = null
     private var pcmSendChannel: Channel<ByteArray>? = null
     private var audioPlayJob: Job? = null
-    private var audioPlayChannel: Channel<ByteArray>? = null
+    private var audioPlayChannel: Channel<AiAudioFrame>? = null
     private var voiceUpstreamStarted = false
+
+    /** 来自 `GET .../live-chat/status` 的上行 PCM 采样率 */
+    private var micSampleRate: Int = 16000
+
+    /** 来自 status；下行包未带 `sample_rate` 时用于播放 */
+    private var receiveSampleRateDefault: Int = 24000
+
+    /** 当前 AudioTrack 采样率，避免每帧重复创建 */
+    private var playbackSampleRate: Int = -1
     
     // 通话时间计数
     private var callDurationSeconds = 0
@@ -61,11 +72,9 @@ class MainActivity : AppCompatActivity() {
     private val agentId = "d044af78-0059-4a37-a0a8-5401121b4b19"
     private val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3Nzg2NDMxNDcsInN1YiI6InVzZXItMDFLUDM5UFJNN1NTMERFRzVUVEVQNFA4OVEifQ.OnlEubSLT54bmwNcwNgg7uk2ajOhM4zSnQ64DVamjis"
     
-    // 音频参数
-    private val sampleRate = 16000
+    // 音频参数（上行 rate 以 status 为准，此处仅表示 PCM 16-bit 单声道）
     private val channelConfig = AudioFormat.CHANNEL_IN_MONO
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-    private val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -146,22 +155,49 @@ class MainActivity : AppCompatActivity() {
             // 创建会话
             session = createIntyVoiceCallDemoSession(token)
 
-            // 先拉 WebSocket 收包流，再监听状态，避免 CONNECTED 早于会话就绪的竞态
+            // 先拉 status 对齐采样率，再收 WebSocket，避免下行按错误 Hz 播放导致变调
             lifecycleScope.launch(Dispatchers.IO) {
                 try {
-                    session?.repository?.liveChatPackets(
-                        wssBase,
-                        agentId,
-                        token
-                    )?.catch { e ->
-                        Log.e(TAG, "Packet collection error", e)
-                        showError("数据接收错误: ${e.message}")
-                    }?.collect { packet ->
-                        handlePacket(packet)
+                    val s = session ?: return@launch
+                    val status = fetchLiveChatStatus(s.httpClient, wssBaseToHttps(wssBase))
+                    if (!status.enabled) {
+                        withContext(Dispatchers.Main) {
+                            showError("Live chat 未开启（status.enabled=false）")
+                            appendLog("✗ Live chat 未开启")
+                            resetUI()
+                        }
+                        s.repository.close()
+                        session = null
+                        return@launch
                     }
+                    micSampleRate = status.sendSampleRate
+                    receiveSampleRateDefault = status.receiveSampleRate
+                    appendLog(
+                        "status: 上行 ${micSampleRate}Hz, 下行默认 ${receiveSampleRateDefault}Hz",
+                    )
+
+                    s.repository
+                        .liveChatPackets(
+                            wssBase,
+                            agentId,
+                            token,
+                        )
+                        .catch { e ->
+                            Log.e(TAG, "Packet collection error", e)
+                            showError("数据接收错误: ${e.message}")
+                        }
+                        .collect { packet ->
+                            handlePacket(packet)
+                        }
                 } catch (e: Exception) {
                     Log.e(TAG, "liveChatPackets collect failed", e)
                     showError("连接异常: ${e.message}")
+                    appendLog("✗ 连接异常: ${e.message}")
+                    withContext(Dispatchers.Main) {
+                        resetUI()
+                    }
+                    session?.repository?.close()
+                    session = null
                 }
             }
 
@@ -218,7 +254,10 @@ class MainActivity : AppCompatActivity() {
             if (b64.isNotEmpty()) {
                 try {
                     val pcm = Base64.decode(b64, Base64.NO_WRAP)
-                    val r = audioPlayChannel?.trySend(pcm)
+                    val hz =
+                        packet.sampleRate.takeIf { it > 0.0 }?.toInt()
+                            ?: receiveSampleRateDefault
+                    val r = audioPlayChannel?.trySend(AiAudioFrame(pcm, hz))
                     if (r?.isFailure == true) {
                         Log.w(TAG, "AI 播放队列已满，丢弃该音频块")
                     }
@@ -336,32 +375,22 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-            val trackBufferSize = AudioTrack.getMinBufferSize(
-                sampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                audioFormat
-            )
-            audioTrack =
-                AudioTrack.Builder()
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setSampleRate(sampleRate)
-                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                            .setEncoding(audioFormat)
-                            .build()
-                    )
-                    .setBufferSizeInBytes(trackBufferSize)
-                    .build()
-            audioTrack?.play()
+            ensureAudioTrack(receiveSampleRateDefault)
 
             audioPlayChannel = Channel(capacity = 128)
             val playCh = audioPlayChannel!!
-            val track = audioTrack
             audioPlayJob =
                 lifecycleScope.launch(Dispatchers.IO) {
-                    for (pcm in playCh) {
+                    for (frame in playCh) {
                         try {
-                            track?.write(pcm, 0, pcm.size)
+                            ensureAudioTrack(frame.sampleRateHz)
+                            val track = audioTrack
+                            track?.write(
+                                frame.pcm,
+                                0,
+                                frame.pcm.size,
+                                AudioTrack.WRITE_BLOCKING,
+                            )
                         } catch (e: Exception) {
                             Log.e(TAG, "AudioTrack 写入失败", e)
                         }
@@ -404,22 +433,34 @@ class MainActivity : AppCompatActivity() {
 //                    // for ActivityCompat#requestPermissions for more details.
 //                    return
 //                }
-                audioRecord = AudioRecord.Builder()
-                    .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setSampleRate(sampleRate)
-                            .setChannelMask(channelConfig)
-                            .setEncoding(audioFormat)
-                            .build()
+                val minIn =
+                    AudioRecord.getMinBufferSize(
+                        micSampleRate,
+                        channelConfig,
+                        audioFormat,
                     )
-                    .setBufferSizeInBytes(bufferSize)
-                    .build()
+                if (minIn <= 0) {
+                    throw IllegalStateException("AudioRecord min buffer: $minIn")
+                }
+                val inBufferBytes = minIn * 2
+                audioRecord =
+                    AudioRecord.Builder()
+                        .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+                        .setAudioFormat(
+                            AudioFormat.Builder()
+                                .setSampleRate(micSampleRate)
+                                .setChannelMask(channelConfig)
+                                .setEncoding(audioFormat)
+                                .build(),
+                        )
+                        .setBufferSizeInBytes(inBufferBytes)
+                        .build()
 
                 audioRecord?.startRecording()
-                appendLog("开始录音")
+                appendLog("开始录音 (${micSampleRate}Hz)")
 
-                val buffer = ByteArray(bufferSize)
+                val frameBytes = (micSampleRate / 50) * 2
+                val buffer = ByteArray(frameBytes)
                 while (recordJob?.isActive == true) {
                     val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
                     if (read > 0) {
@@ -430,7 +471,13 @@ class MainActivity : AppCompatActivity() {
                         val ch = pcmSendChannel
                         if (ch != null) {
                             try {
-                                ch.send(buffer.copyOf(read))
+                                val chunk =
+                                    if (read == buffer.size) {
+                                        buffer.copyOf()
+                                    } else {
+                                        buffer.copyOf(read)
+                                    }
+                                ch.send(chunk)
                             } catch (e: Exception) {
                                 Log.e(TAG, "麦克风数据入队失败", e)
                             }
@@ -484,6 +531,7 @@ class MainActivity : AppCompatActivity() {
         audioTrack?.stop()
         audioTrack?.release()
         audioTrack = null
+        playbackSampleRate = -1
 
         // 停止计时
         durationJob?.cancel()
@@ -574,6 +622,64 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         disconnectFromServer()
     }
+
+    private fun wssBaseToHttps(wssBaseUrl: String): String {
+        val t = wssBaseUrl.trim()
+        return when {
+            t.startsWith("wss://", ignoreCase = true) -> "https://" + t.drop(6)
+            t.startsWith("ws://", ignoreCase = true) -> "http://" + t.drop(5)
+            else -> t
+        }
+    }
+
+    private fun ensureAudioTrack(sampleRateHz: Int) {
+        if (sampleRateHz <= 0) return
+        if (audioTrack != null && playbackSampleRate == sampleRateHz) return
+
+        audioTrack?.let { t ->
+            try {
+                t.stop()
+            } catch (_: IllegalStateException) {
+            }
+            t.release()
+        }
+        audioTrack = null
+
+        val min =
+            AudioTrack.getMinBufferSize(
+                sampleRateHz,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+            )
+        if (min <= 0) {
+            Log.e(TAG, "AudioTrack min buffer invalid: $min for rate=$sampleRateHz")
+            return
+        }
+
+        val track =
+            AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(sampleRateHz)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build(),
+                )
+                .setBufferSizeInBytes(min * 2)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+        track.play()
+        audioTrack = track
+        playbackSampleRate = sampleRateHz
+    }
+
+    private data class AiAudioFrame(val pcm: ByteArray, val sampleRateHz: Int)
 
     companion object {
         private const val TAG = "MainActivity"
