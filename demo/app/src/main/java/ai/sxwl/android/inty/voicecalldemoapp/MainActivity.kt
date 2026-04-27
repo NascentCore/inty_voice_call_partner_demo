@@ -71,7 +71,13 @@ class MainActivity : AppCompatActivity() {
     private val wssBase = "wss://dev.inty.sxwl.ai"
     private val agentId = "d044af78-0059-4a37-a0a8-5401121b4b19"
     private val token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3Nzg2NDMxNDcsInN1YiI6InVzZXItMDFLUDM5UFJNN1NTMERFRzVUVEVQNFA4OVEifQ.OnlEubSLT54bmwNcwNgg7uk2ajOhM4zSnQ64DVamjis"
-    
+
+    /** 识别语言（BCP-47），见对接说明 WebSocket 可选参数 `speech_language_code` */
+    private val speechLanguageCode = "zh-CN"
+
+    /** 回复语言名，与官方 demo 中 English 对应；若服务端要求其它写法以运营方为准 */
+    private val responseLanguageName = "Chinese"
+
     // 音频参数（上行 rate 以 status 为准，此处仅表示 PCM 16-bit 单声道）
     private val channelConfig = AudioFormat.CHANNEL_IN_MONO
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
@@ -181,6 +187,9 @@ class MainActivity : AppCompatActivity() {
                             wssBase,
                             agentId,
                             token,
+                            speechLanguageCode = speechLanguageCode,
+                            responseLanguageName = responseLanguageName,
+                            agentStartsConversation = true,
                         )
                         .catch { e ->
                             Log.e(TAG, "Packet collection error", e)

@@ -10,6 +10,7 @@ object IntyVoiceCallUrls {
         token: String,
         speechLanguageCode: String? = null,
         responseLanguageName: String? = null,
+        agentStartsConversation: Boolean = false,
     ): String {
         val base = wssBaseUrl.trimEnd('/')
         val qToken = URLEncoder.encode(token, StandardCharsets.UTF_8).replace("+", "%20")
@@ -23,6 +24,9 @@ object IntyVoiceCallUrls {
             val q =
                 URLEncoder.encode(name, StandardCharsets.UTF_8).replace("+", "%20")
             sb.append("&response_language_name=").append(q)
+        }
+        if (agentStartsConversation) {
+            sb.append("&agent_starts_conversation=true")
         }
         return sb.toString()
     }

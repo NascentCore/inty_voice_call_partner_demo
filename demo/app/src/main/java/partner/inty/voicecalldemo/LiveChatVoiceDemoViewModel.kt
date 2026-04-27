@@ -54,6 +54,7 @@ class LiveChatVoiceDemoViewModel(
         token: String,
         speechLanguageCode: String? = null,
         responseLanguageName: String? = null,
+        agentStartsConversation: Boolean = true,
     ) {
         packetJob?.cancel()
         packetJob =
@@ -65,6 +66,7 @@ class LiveChatVoiceDemoViewModel(
                         token,
                         speechLanguageCode,
                         responseLanguageName,
+                        agentStartsConversation = agentStartsConversation,
                     )
                     .catch { e ->
                         _uiState.update {

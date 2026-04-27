@@ -44,11 +44,13 @@ class IntyLiveChatMinimalSession(
     private val client = IntyVoiceCallClient(dataSource)
 
     // 仅使用 Header 鉴权时，URL 不要带 ?token=，减少泄漏面；语言参数可选。
+    // agent_starts_conversation=true：接通后由服务端触发模型先语音问候（见 Inty 后端 live-chat）。
     private val wsUrl: String =
         buildString {
             append(wssBase.trimEnd('/'))
             append("/api/v1/live-chat/")
             append(agentId)
+            append("?agent_starts_conversation=true")
         }
 
     fun start(onPacket: (CallPacket) -> Unit) {

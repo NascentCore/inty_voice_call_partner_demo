@@ -16,6 +16,7 @@ class LiveChatVoiceDemoRepository(
         token: String,
         speechLanguageCode: String? = null,
         responseLanguageName: String? = null,
+        agentStartsConversation: Boolean = true,
     ): Flow<CallPacket> {
         val url =
             IntyVoiceCallUrls.liveChatWebSocketUrl(
@@ -24,6 +25,7 @@ class LiveChatVoiceDemoRepository(
                 token,
                 speechLanguageCode = speechLanguageCode,
                 responseLanguageName = responseLanguageName,
+                agentStartsConversation = agentStartsConversation,
             )
         return voiceCallClient.packets(url)
     }
